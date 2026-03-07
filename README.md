@@ -1,36 +1,100 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# APS Issue Manager
 
-## Getting Started
+Autodesk Platform Services (APS) Viewer と連携し、BIMモデル上の3D空間に直接「指摘事項 (Issue)」をピン留めして管理するWebアプリケーションです。
 
-First, run the development server:
+## 前提条件
+
+- **Node.js**: v18以上推奨
+- **Docker & Docker Compose**: データベース (PostgreSQL) およびオブジェクトストレージ (MinIO) の起動に必要
+- **APS Credentials**: Autodesk Platform Services の Client ID, Client Secret, および閲覧対象の Model URN
+
+## 環境構築と起動手順
+
+### 1. リポジトリのクローンと依存関係のインストール
+
+```bash
+git clone <repository-url>
+cd issue-manager
+npm install
+```
+
+### 2. 環境変数の設定
+
+プロジェクトルートにある `.env.example` をコピーして `.env` または `.env.local` を作成し、必要な値を設定してください。
+
+```bash
+cp .env.example .env.local
+```
+
+特に以下の項目は動作に必須です：
+- **APS Credentials**: Viewerでのモデル表示に必要です。
+- **MinIO Settings**: 写真のアップロード保存に必要です（Docker起動時のデフォルト値が `.env.example` に設定されています）。
+
+### 3. バックエンドサービス (DB / Storage) の起動
+
+Docker Compose を使用して、PostgreSQL と MinIO をバックグラウンドで起動します。
+
+```bash
+docker compose up -d
+```
+
+### 4. データベースとストレージの初期化
+
+Prisma を使用してデータベースのスキーマを同期し、初期データを投入します。また、MinIO に必要なバケットを作成します。
+
+```bash
+# DBマイグレーションとシード（ユーザー情報等の投入）
+npx prisma db push
+npx prisma db seed
+
+# ストレージ（MinIO）の初期化（バケット作成とポリシー設定）
+npm run setup:storage
+```
+
+### 5. 開発サーバーの起動
+
+Next.jsの開発サーバーを起動します。
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+起動後、ブラウザで [http://localhost:3000/projects](http://localhost:3000/projects) にアクセスしてください。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+> [!TIP]
+> 画面右上のユーザーセレクターを使用することで、Admin / Editor / Viewer の各ロールによる権限の違い（編集可否など）を簡単に確認できます。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+---
 
-## Learn More
+## トラブルシューティング
 
-To learn more about Next.js, take a look at the following resources:
+### ビューアーがロードされない（"Loading WebGL Viewer..." のまま動かない）
+- `.env.local` の `APS_CLIENT_ID`, `APS_CLIENT_SECRET`, `APS_URN` が正しく設定されているか確認してください。
+- インターネット接続を確認してください（AutodeskのライブラリをCDN経由で取得します）。
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### ユーザー一覧が空、または「Loading users...」で止まる
+- `npx prisma db seed` を実行したか確認してください。
+- Dockerコンテナ (`aps-issue-db`) が正しく起動しているか確認してください。
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## テストの実行
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+このプロジェクトは単体テスト(Vitest)およびE2Eテスト(Playwright)によって品質を保証しています。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**単体テスト (ロジック・コンポーネントのテスト):**
+```bash
+npm run test
+```
+
+**E2Eテスト (ブラウザ上での通しテスト):**
+```bash
+npm run test:e2e
+```
+*(※注意: E2Eテストは必ず開発サーバー `npm run dev` が起動している状態で実行してください)*
+
+## 技術スタック
+- **Frontend**: Next.js (App Router), React, TailwindCSS
+- **3D Viewer**: Autodesk Platform Services (APS) Viewer, Three.js
+- **Backend / DB**: Next.js API Routes, Prisma, PostgreSQL
+- **Testing**: Vitest, Playwright
