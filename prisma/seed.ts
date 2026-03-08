@@ -30,30 +30,30 @@ async function main() {
     // モデル上、floor は String 型。
     const issues = [
         {
-            title: '1F エントランス壁の汚れ',
-            description: '壁面に塗装の剥がれがあります。',
+            title: '養生不足',
+            description: '床面を養生してください。',
             status: 'Open',
             category: '品質不良',
-            floor: '1F',
-            modelPosition: { x: -5.0, y: 2.0, z: -10.0 },
+            floor: '7F',
+            modelPosition: { x: 48.94, y: 16.76, z: 22.92 },
             createdBy: 'admin-user-id'
         },
         {
-            title: '2F 廊下の照明不点',
-            description: '照明が切れています。交換が必要です。',
+            title: '塗装不良',
+            description: '防錆塗装の塗り残しがあります。',
             status: 'In Progress',
             category: '品質不良',
             floor: '2F',
-            modelPosition: { x: 10.0, y: 14.5, z: 5.0 },
+            dbId: 20865,
             createdBy: 'editor-a-user-id'
         },
         {
-            title: '4F 窓枠の隙間',
-            description: 'サッシの建て付けが悪く、風切り音が発生しています。',
+            title: '他設備と干渉',
+            description: '電気ラックと干渉しています。',
             status: 'Open',
-            category: '品質不良',
+            category: '施工不備',
             floor: '4F',
-            modelPosition: { x: -2.0, y: 24.0, z: 15.0 },
+            dbId: 26488,
             createdBy: 'admin-user-id'
         }
     ];

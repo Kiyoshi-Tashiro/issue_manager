@@ -19,6 +19,7 @@ export function createIssueExtensionClass(Autodesk: any) {
         private tool: any = null;
         private markers: Map<string, any> = new Map();
         private labels: Map<string, HTMLElement> = new Map();
+        private lastIssues: any[] = [];
 
         constructor(viewer: any, options: any) {
             super(viewer, options);
@@ -27,8 +28,17 @@ export function createIssueExtensionClass(Autodesk: any) {
         public load() {
             console.log('IssueExtension loaded');
             this.viewer.addEventListener(Autodesk.Viewing.CAMERA_CHANGE_EVENT, this.updateAllLabels);
+            this.viewer.addEventListener(Autodesk.Viewing.OBJECT_TREE_CREATED_EVENT, this.onModelDataReady);
+            this.viewer.addEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, this.onModelDataReady);
             return true;
         }
+
+        private onModelDataReady = () => {
+            console.log('[DEBUG] Model data ready event received. Re-syncing markers...');
+            if (this.lastIssues.length > 0) {
+                this.setIssues(this.lastIssues);
+            }
+        };
 
         public unload() {
             this.clearMarkers();
@@ -37,6 +47,8 @@ export function createIssueExtensionClass(Autodesk: any) {
                 this.tool = null;
             }
             this.viewer.removeEventListener(Autodesk.Viewing.CAMERA_CHANGE_EVENT, this.updateAllLabels);
+            this.viewer.removeEventListener(Autodesk.Viewing.OBJECT_TREE_CREATED_EVENT, this.onModelDataReady);
+            this.viewer.removeEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, this.onModelDataReady);
             return true;
         }
 
@@ -64,27 +76,64 @@ export function createIssueExtensionClass(Autodesk: any) {
             });
         };
 
+        private getComponentCenter(dbId: number): THREE.Vector3 | null {
+            if (!this.viewer || !this.viewer.model) return null;
+
+            const fragIds: number[] = [];
+            const instanceTree = this.viewer.model.getInstanceTree();
+            if (instanceTree) {
+                instanceTree.enumNodeFragments(dbId, (fragId: number) => {
+                    fragIds.push(fragId);
+                }, true);
+            }
+
+            if (fragIds.length === 0) return null;
+
+            const fragList = this.viewer.model.getFragmentList();
+            const bbox = new THREE.Box3();
+            const fragBBox = new THREE.Box3();
+
+            fragIds.forEach(fragId => {
+                fragList.getWorldBounds(fragId, fragBBox);
+                bbox.union(fragBBox);
+            });
+
+            return bbox.getCenter(new THREE.Vector3());
+        }
+
         /**
          * Updates markers based on current issues data.
          */
         public setIssues(issues: any[]) {
             console.log('[DEBUG] IssueExtension.setIssues called with:', issues.length, 'issues');
+            this.lastIssues = issues;
             this.clearMarkers();
 
-            // 1. Clustering logic for unfolding
+            // 1. Resolve issue positions (dbId priority)
+            const resolvedIssues = issues.map(issue => {
+                let position = null;
+                if (issue.dbId) {
+                    position = this.getComponentCenter(Number(issue.dbId));
+                }
+                if (!position && issue.modelPosition) {
+                    position = new THREE.Vector3(issue.modelPosition.x, issue.modelPosition.y, issue.modelPosition.z);
+                }
+                return { ...issue, _resolvedPosition: position };
+            }).filter(i => i._resolvedPosition);
+
+            // 2. Clustering logic for unfolding
             const clusters: Map<string, any[]> = new Map();
             const threshold = 15.0; // Increased distance threshold for clustering
 
-            issues.forEach(issue => {
-                if (!issue.modelPosition) return;
-
+            resolvedIssues.forEach(issue => {
+                const pos = issue._resolvedPosition;
                 let foundClusterKey: string | null = null;
                 for (const key of clusters.keys()) {
                     const [kx, ky, kz] = key.split(',').map(Number);
                     const dist = Math.sqrt(
-                        (issue.modelPosition.x - kx) ** 2 +
-                        (issue.modelPosition.y - ky) ** 2 +
-                        (issue.modelPosition.z - kz) ** 2
+                        (pos.x - kx) ** 2 +
+                        (pos.y - ky) ** 2 +
+                        (pos.z - kz) ** 2
                     );
                     if (dist < threshold) {
                         foundClusterKey = key;
@@ -95,12 +144,12 @@ export function createIssueExtensionClass(Autodesk: any) {
                 if (foundClusterKey) {
                     clusters.get(foundClusterKey)!.push(issue);
                 } else {
-                    const key = `${issue.modelPosition.x},${issue.modelPosition.y},${issue.modelPosition.z}`;
+                    const key = `${pos.x},${pos.y},${pos.z}`;
                     clusters.set(key, [issue]);
                 }
             });
 
-            // 2. Create markers with offsets
+            // 3. Create markers with offsets
             clusters.forEach((clusterIssues, key) => {
                 const count = clusterIssues.length;
 
@@ -152,7 +201,7 @@ export function createIssueExtensionClass(Autodesk: any) {
             const headMesh = new THREE.Mesh(headGeo, fillMaterial);
             mesh.add(headMesh);
 
-            mesh.position.set(issue.modelPosition.x, issue.modelPosition.y, issue.modelPosition.z);
+            mesh.position.set(issue._resolvedPosition.x, issue._resolvedPosition.y, issue._resolvedPosition.z);
 
             // Store metadata for dynamic updates
             mesh.userData = {
@@ -444,11 +493,65 @@ export function createIssueExtensionClass(Autodesk: any) {
                     }
 
                     if (camera && pointer) {
-                        const distance = self.viewer.navigation.getTarget().distanceTo(camera.position);
                         const ray = self.viewer.impl.viewportToRay(pointer);
-                        const intersectPoint = new THREE.Vector3();
-                        intersectPoint.copy(ray.origin).add(ray.direction.multiplyScalar(distance));
-                        onSelect(intersectPoint, null);
+
+                        // Robust manual "radius" hit test by sampling points around the click
+                        const findClosestHit = () => {
+                            const radii = [20, 50, 100, 200];
+                            const samplesPerRing = 8;
+                            let bestHit = null;
+                            let minProjectedDist = Infinity;
+
+                            // Ensure camera matrices are up to date for reliable math
+                            camera.updateMatrixWorld();
+                            const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+
+                            for (const r of radii) {
+                                for (let i = 0; i < samplesPerRing; i++) {
+                                    const angle = (i / samplesPerRing) * Math.PI * 2;
+                                    const sx = clientX + Math.cos(angle) * r;
+                                    const sy = clientY + Math.sin(angle) * r;
+                                    const res = self.viewer.impl.hitTest(sx, sy, false);
+                                    if (res && res.intersectPoint) {
+                                        // Calculate depth of this hit to find the most "representative" depth
+                                        const depth = res.intersectPoint.clone().sub(camera.position).dot(cameraDir);
+                                        if (depth > 0 && depth < minProjectedDist) {
+                                            minProjectedDist = depth;
+                                            bestHit = res;
+                                        }
+                                    }
+                                }
+                                // If we found hits at a smaller radius, stop and use the best one
+                                if (bestHit) break;
+                            }
+                            return bestHit;
+                        };
+
+                        const depthResult = findClosestHit();
+
+                        // Use unified ray-plane intersection formula:
+                        // The intersection point P must be on the click ray P = O + t*V
+                        // and lie on a plane parallel to the camera sensor containing our refPoint.
+                        // Formula: t = (refPoint - O) · L / (V · L)
+                        // where O = ray.origin, V = ray.direction, L = camera forward direction.
+
+                        camera.updateMatrixWorld();
+                        const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                        const vDotL = ray.direction.dot(cameraDir);
+
+                        if (Math.abs(vDotL) > 0.0001) {
+                            let refPoint;
+                            if (depthResult && depthResult.intersectPoint) {
+                                refPoint = depthResult.intersectPoint;
+                            } else {
+                                refPoint = self.viewer.navigation.getTarget();
+                            }
+
+                            const t = new THREE.Vector3().subVectors(refPoint, ray.origin).dot(cameraDir) / vDotL;
+                            const intersectPoint = ray.origin.clone().add(ray.direction.clone().multiplyScalar(t));
+
+                            onSelect(intersectPoint, null);
+                        }
                         return true;
                     }
 
